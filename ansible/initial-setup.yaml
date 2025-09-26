@@ -1,0 +1,7 @@
+---
+- name: Install Docker and essential-tools
+  hosts: servers
+  become: true
+  roles:
+    - docker
+    - essential-tools
