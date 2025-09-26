@@ -1,0 +1,29 @@
+---
+# === Harbor basics ===
+harbor_version: "v2.10.3"
+harbor_install_dir: /opt/harbor
+harbor_data_dir: /data/harbor
+harbor_hostname: "harbor.infra.mirafzal.uz"
+harbor_admin_password: "ChangeMe123!"   # change in host_vars or vault
+harbor_http_port: 8080                  # Harbor listens HTTP internally; Nginx terminates TLS
+harbor_with_trivy: true                 # set false to skip
+
+# === TLS (acme.sh) ===
+acme_account_email: "paulbundy07@gmai.com"
+dns_provider_suffix: "dgon"
+acme_env:                               # provider-specific env vars for acme.sh
+  DO_API_KEY: "PUT_YOUR_CF_API_TOKEN_HERE"
+
+# cert install targets for Nginx
+tls_cert_dir: /etc/ssl/harbor
+tls_fullchain_path: "{{ tls_cert_dir }}/fullchain.cer"
+tls_key_path: "{{ tls_cert_dir }}/harbor.key"
+
+# Nginx config
+nginx_site_path: /etc/nginx/sites-available/harbor.conf
+nginx_site_link: /etc/nginx/sites-enabled/harbor.conf
+client_max_body_size: "2g"   # allow large image pushes
+
+# Paths to binaries (override if needed)
+bin_docker: "docker"
+bin_compose_subcmd: "compose"           # we use `docker compose ...`

@@ -1,0 +1,6 @@
+---
+- name: Install Harbor with Nginx and DNS-01 TLS
+  hosts: harbor
+  become: true
+  roles:
+    - harbor

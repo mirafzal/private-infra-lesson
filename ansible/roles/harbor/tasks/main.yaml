@@ -1,0 +1,136 @@
+---
+# ---------- Preflight: ensure Docker & compose are already installed ----------
+- name: Check docker is available
+  ansible.builtin.command: "{{ bin_docker }} info"
+  register: docker_check
+  changed_when: false
+
+- name: Check docker compose subcommand is available
+  ansible.builtin.command: "{{ bin_docker }} {{ bin_compose_subcmd }} version"
+  register: compose_check
+  changed_when: false
+
+- name: Assert docker/compose presence
+  ansible.builtin.assert:
+    that:
+      - docker_check.rc == 0
+      - compose_check.rc == 0
+    fail_msg: >
+      Docker and/or 'docker compose' not found. Install them with your separate role
+      before running the Harbor role.
+
+# ---------- Nginx ----------
+- name: Install nginx
+  ansible.builtin.apt:
+    name: nginx
+    state: present
+    update_cache: true
+
+- name: Ensure TLS dir exists
+  ansible.builtin.file:
+    path: "{{ tls_cert_dir }}"
+    state: directory
+    mode: "0755"
+
+# ---------- acme.sh for DNS-01 (DigitalOcean) ----------
+- name: Install deps for acme.sh
+  ansible.builtin.apt:
+    name: [git, socat, cron, curl]
+    state: present
+
+- name: Install acme.sh (idempotent)
+  ansible.builtin.shell: |
+    if [ ! -x /root/.acme.sh/acme.sh ]; then
+      curl -fsSL https://get.acme.sh | sh -s email={{ acme_account_email }}
+    fi
+  args: { executable: /bin/bash }
+  changed_when: false
+
+- name: Create provider env file for acme.sh
+  ansible.builtin.copy:
+    dest: /root/.acme.sh/dns_api.env
+    mode: "0600"
+    content: |
+      {% for k, v in acme_env.items() %}
+      export {{ k }}="{{ v }}"
+      {% endfor %}
+
+- name: Issue/renew cert via DNS-01 (DigitalOcean)
+  ansible.builtin.shell: |
+    set -e
+    source /root/.acme.sh/dns_api.env
+    /root/.acme.sh/acme.sh --issue --dns dns_{{ dns_provider_suffix }} \
+      -d {{ harbor_hostname }} --keylength ec-256 || true
+    /root/.acme.sh/acme.sh --install-cert -d {{ harbor_hostname }} \
+      --ecc \
+      --key-file       {{ tls_key_path }} \
+      --fullchain-file {{ tls_fullchain_path }} \
+      --reloadcmd      "systemctl reload nginx"
+  args: { executable: /bin/bash }
+  changed_when: false
+
+# ---------- Nginx vhost ----------
+- name: Render Nginx site
+  ansible.builtin.template:
+    src: nginx-harbor.conf.j2
+    dest: "{{ nginx_site_path }}"
+    mode: "0644"
+  notify: reload nginx
+
+- name: Enable Nginx site
+  ansible.builtin.file:
+    src: "{{ nginx_site_path }}"
+    dest: "{{ nginx_site_link }}"
+    state: link
+  notify: reload nginx
+
+- name: Remove default site if present
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  notify: reload nginx
+
+# ---------- Harbor installer (requires docker + compose preinstalled) ----------
+- name: Create install dir
+  ansible.builtin.file:
+    path: "{{ harbor_install_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Download Harbor installer
+  ansible.builtin.get_url:
+    url: "https://github.com/goharbor/harbor/releases/download/{{ harbor_version }}/harbor-online-installer-{{ harbor_version }}.tgz"
+    dest: "{{ harbor_install_dir }}/harbor-{{ harbor_version }}.tgz"
+    mode: "0644"
+
+- name: Unarchive Harbor installer
+  ansible.builtin.unarchive:
+    src: "{{ harbor_install_dir }}/harbor-{{ harbor_version }}.tgz"
+    dest: "{{ harbor_install_dir }}"
+    remote_src: true
+    creates: "{{ harbor_install_dir }}/harbor/install.sh"
+
+- name: Ensure data dir exists
+  ansible.builtin.file:
+    path: "{{ harbor_data_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Render harbor.yml
+  ansible.builtin.template:
+    src: harbor.yml.j2
+    dest: "{{ harbor_install_dir }}/harbor/harbor.yml"
+    mode: "0644"
+
+- name: Install/upgrade Harbor
+  ansible.builtin.shell: |
+    set -e
+    cd {{ harbor_install_dir }}/harbor
+    if [ ! -f docker-compose.yml ]; then
+      ./install.sh {{ '--with-trivy' if harbor_with_trivy else '' }}
+    else
+      {{ bin_docker }} {{ bin_compose_subcmd }} down
+      ./prepare
+      {{ bin_docker }} {{ bin_compose_subcmd }} up -d
+    fi
+  args: { executable: /bin/bash }
